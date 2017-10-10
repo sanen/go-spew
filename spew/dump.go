@@ -24,9 +24,14 @@ import (
 	"os"
 	"reflect"
 	"regexp"
-	"strconv"
+	// "strconv"
 	"strings"
+	"html"
+	"unicode"
 )
+
+const h_nbsp = " "
+const h_middot = "·"
 
 var (
 	// uint8Type is a reflect.Type representing a uint8.  It is used to
@@ -123,10 +128,11 @@ func (d *dumpState) dumpPtr(v reflect.Value) {
 	}
 
 	// Display type information.
-	d.w.Write(openParenBytes)
-	d.w.Write(bytes.Repeat(asteriskBytes, indirects))
-	d.w.Write([]byte(ve.Type().String()))
-	d.w.Write(closeParenBytes)
+	// d.w.Write(openParenBytes)
+	// d.w.Write(bytes.Repeat(asteriskBytes, indirects))
+	// d.w.Write([]byte(ve.Type().String()))
+	// d.w.Write(closeParenBytes)
+	d.writeType(ve, bytes.Repeat(asteriskBytes, indirects))
 
 	// Display pointer information.
 	if !d.cs.DisablePointerAddresses && len(pointerChain) > 0 {
@@ -153,6 +159,74 @@ func (d *dumpState) dumpPtr(v reflect.Value) {
 		d.ignoreNextType = true
 		d.dump(ve)
 	}
+	d.w.Write(closeParenBytes)
+}
+
+// todo: clearly: a dumper that takes a decorator.  Default is txt, html & json are options, e.g., html-readonly vs html-interactive
+
+// todo: if a lower-case (private) field, not usually docs, so try converting link to a search/
+// e.g.,  http://localhost:6060/search?q=context.valueCtx gives us some resules where the /#valueCtx just brings up the package
+
+// TODO: cache this output by type, esp if there are doc-links.
+
+func (d *dumpState) writeType(v reflect.Value, manualPtrPrefix []byte) {
+	d.w.Write(openParenBytes)
+	if manualPtrPrefix != nil {
+		d.w.Write(manualPtrPrefix)
+	}
+	typeSpec := v.Type().String() // can include *, [], map[foo][bar], package.Type, etc.
+	// IF LOWER-CASE TYPE (non-public) there typically (always?) isn't
+	// E.g.: http://localhost:6060/search?q=context.valueCtx
+	// tofix: *http.Respose is generating link to: /#Response -- it's a nil-ptr case where the '*' is not manually added, it's baked in
+	// applies to all baked in ptrs: e.g., e.g.,  *tls.ConnectionState, *log.Logger, *multipart.Form, erc.
+	// OH: []tls.Certificate, same problem: so any syntax before 1st word in type name is an issue of course.
+
+	// todo: heuristic:trim everything UP THROUGH the first '*' or ']', so we get just 'tls.Certificate' here
+	// NameToCertificate: ( [map[string]*tls.Certificate] {} Certificate   map[string]*tls#Certificate   ) nil,
+	// (tho, w/out package, may be useless)
+
+	// POINTERS of a TYPE that are NIL appear to have the least info (never any package)...
+
+
+	// If has a dot, and has no spaces, we may be able to document-link this type in a simple way.
+	const debug = false
+	if dot := strings.IndexByte(typeSpec, '.'); dot > 0 && strings.IndexByte(typeSpec, ' ') < 0 { 
+		// '*' at front of Type name typically happens in spew when ptr is nil
+		if debug { d.w.Write([]byte(` <i>[`+typeSpec+`]</i> `)) }
+		typePkg := strings.TrimLeft(typeSpec[:dot], "*[]")
+		typeName := typeSpec[dot+1:] // basename
+		// todo: handle getting to: string "github.com/gin-gonic/gin/#Context" from just "gin.Context"
+		// d.w.Write([]byte(`<a href="http://localhost:6060/pkg/` + typePkg + `#` + typeName + `" target=_>`))
+		packagePath := v.Type().PkgPath() // always empty on pointers?  might have to de-reference...
+		if debug { d.w.Write([]byte(`<i>{`+packagePath+`}</i> `)) }
+		
+		var link string // rely's on a supporting <base href=> right now
+		// if len(packagePath) > 0 && strings.IndexByte(packagePath, '.') > 0 { // e.g., github.com/foo/bar
+
+		if unicode.IsUpper(rune(typeName[0])) {
+			if len(packagePath) > 0 {
+				link = packagePath + `/#` + typeName
+			} else {
+				link = typePkg + `/#` + typeName // rely's on a supporting <base href=> right now
+			}
+			d.w.Write([]byte(`<a id=gtype href="pkg/` + link + `">`)) 
+		} else {
+			d.w.Write([]byte(`<a id=gtype href="search?q=` + typePkg + "." + typeName + `">`)) 
+			// http://localhost:6060/search?q=http.chunkWriter
+		}
+		// d.w.Write([]byte(`<a href="http://localhost:6060/pkg/net/http/#` + typeName + `" target=_>`))
+		if false && len(packagePath) > 0 {
+			// d.w.Write([]byte(packagePath + " &bull; "))
+			d.w.Write([]byte(packagePath + h_middot + typeName)) // todo: still throwing away
+		} else {
+			d.w.Write([]byte(typeSpec))
+		}
+		d.w.Write([]byte("</a>"))
+		if debug { d.w.Write([]byte("   <b style=color:blue>" + link + "</b>   ")) } // note nbsp's
+	} else {
+		d.w.Write([]byte(typeSpec))
+	}
+	// d.w.Write([]byte(v.Type().String())) // original vanilla code
 	d.w.Write(closeParenBytes)
 }
 
@@ -224,9 +298,14 @@ func (d *dumpState) dumpSlice(v reflect.Value) {
 	}
 
 	// Hexdump the entire slice as needed.
+	// todo: if already dumped, don't re-dump and/or indicate is a repeat
 	if doHexDump {
 		indent := strings.Repeat(d.cs.Indent, d.depth)
+		if d.cs.MaxHexDump > 0 && len(buf) > d.cs.MaxHexDump {
+			buf = buf[:d.cs.MaxHexDump]
+		}
 		str := indent + hex.Dump(buf)
+		str = html.EscapeString(str) // faster to do this incrementally in hex.Dump -- only need to check one small chunk at a time (todo: html switch)
 		str = strings.Replace(str, "\n", "\n"+indent, -1)
 		str = strings.TrimRight(str, d.cs.Indent)
 		d.w.Write([]byte(str))
@@ -266,9 +345,7 @@ func (d *dumpState) dump(v reflect.Value) {
 	// Print type information unless already handled elsewhere.
 	if !d.ignoreNextType {
 		d.indent()
-		d.w.Write(openParenBytes)
-		d.w.Write([]byte(v.Type().String()))
-		d.w.Write(closeParenBytes)
+		d.writeType(v, nil)
 		d.w.Write(spaceBytes)
 	}
 	d.ignoreNextType = false
@@ -318,10 +395,14 @@ func (d *dumpState) dump(v reflect.Value) {
 		printBool(d.w, v.Bool())
 
 	case reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Int:
+		d.w.Write([]byte("<n>"))
 		printInt(d.w, v.Int(), 10)
+		d.w.Write([]byte("</n>"))
 
 	case reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uint:
+		d.w.Write([]byte("<n>"))
 		printUint(d.w, v.Uint(), 10)
+		d.w.Write([]byte("</n>"))
 
 	case reflect.Float32:
 		printFloat(d.w, v.Float(), 32)
@@ -356,7 +437,23 @@ func (d *dumpState) dump(v reflect.Value) {
 		d.w.Write(closeBraceBytes)
 
 	case reflect.String:
-		d.w.Write([]byte(strconv.Quote(v.String())))
+		// d.w.Write([]byte(strconv.Quote(v.String()))) // urm, kinda slow?
+		// Note: ALL string and []buf output will now need to be entity escaped.
+		var str = v.String()
+		if len(str) < 2 {
+			if len(str) == 0 {
+				d.w.Write([]byte("<q></q>"))
+			} else {
+				d.w.Write([]byte("<q>"))
+				d.w.Write([]byte(str))
+				d.w.Write([]byte("</q>"))
+			}
+		} else {
+			// todo: if leading or trailing spaces, force quotes
+			d.w.Write([]byte("<t>")) // todo: html switch
+			d.w.Write([]byte(html.EscapeString(str)))
+			d.w.Write([]byte("</t>"))
+		}
 
 	case reflect.Interface:
 		// The only time we should get here is for nil interfaces due to
@@ -414,8 +511,16 @@ func (d *dumpState) dump(v reflect.Value) {
 			numFields := v.NumField()
 			for i := 0; i < numFields; i++ {
 				d.indent()
+				d.w.Write([]byte("<b>"))
 				vtf := vt.Field(i)
+				if false { // package-hack
+					var _ *reflect.StructField
+					var _ reflect.StructTag
+					d.w.Write([]byte(vtf.PkgPath))
+					d.w.Write(colonSpaceBytes)
+				}
 				d.w.Write([]byte(vtf.Name))
+				d.w.Write([]byte("</b>"))
 				d.w.Write(colonSpaceBytes)
 				d.ignoreNextIndent = true
 				d.dump(d.unpackValue(v.Field(i)))
@@ -441,9 +546,9 @@ func (d *dumpState) dump(v reflect.Value) {
 	// types are added.
 	default:
 		if v.CanInterface() {
-			fmt.Fprintf(d.w, "%v", v.Interface())
+			fmt.Fprintf(d.w, "(DEFAULT0)%v", v.Interface())
 		} else {
-			fmt.Fprintf(d.w, "%v", v.String())
+			fmt.Fprintf(d.w, "(DEFAULT1)%v", v.String())
 		}
 	}
 }

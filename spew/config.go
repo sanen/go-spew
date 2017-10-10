@@ -98,11 +98,15 @@ type ConfigState struct {
 	// be spewed to strings and sorted by those strings.  This is only
 	// considered if SortKeys is true.
 	SpewKeys bool
+
+	// Maximum default byte-buffer hexdump output size
+	MaxHexDump int
+	
 }
 
 // Config is the active configuration of the top-level functions.
 // The configuration can be changed by modifying the contents of spew.Config.
-var Config = ConfigState{Indent: " "}
+var Config = ConfigState{Indent: " ", MaxHexDump: 128}
 
 // Errorf is a wrapper for fmt.Errorf that treats each argument as if it were
 // passed with a Formatter interface returned by c.NewFormatter.  It returns
